@@ -886,14 +886,19 @@ function doGet(e) {
         <div class="space-y-4 bg-slate-800/40 p-4 rounded-2xl border border-slate-800">
           <h3 class="font-extrabold text-sm text-amber-400">🏰 맵 구성 & 퀴즈 규칙</h3>
 
-          <div class="p-3.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 space-y-2">
-            <div class="flex items-center justify-between gap-2">
+          <div class="p-3.5 rounded-2xl bg-indigo-950/40 border border-indigo-500/40 space-y-2.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
               <label for="cfg-admin-password" class="block text-xs font-extrabold text-indigo-300">🔐 관리자 전용 비밀번호 (학생 설정변경 방지)</label>
-              <span class="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-200 font-bold">학생 접속 시 자동 잠금</span>
+              <span id="lbl-current-pw-status" class="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-extrabold">현재 적용 비번: 1234</span>
             </div>
-            <input id="cfg-admin-password" type="text" value="1234" placeholder="관리자 비밀번호 입력 (예: 1234)" class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-indigo-500/40 text-sm text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-400" />
+            <div class="flex items-center gap-2">
+              <input id="cfg-admin-password" type="text" value="1234" placeholder="새 관리자 비밀번호 입력 (예: 1234)" class="flex-1 px-3 py-2 rounded-xl bg-slate-900 border border-indigo-500/40 text-sm text-amber-300 font-mono font-bold focus:outline-none focus:border-amber-400" />
+              <button id="btn-quick-save-pw" type="button" class="roblox-btn px-3.5 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white font-black text-xs shrink-0 shadow-md">
+                🔑 비번 즉시 저장
+              </button>
+            </div>
             <p class="text-[11px] text-slate-400 leading-relaxed">
-              학생들이 배포 주소로 접속하면 <strong>오직 3D 플레이와 순위표만 보이는 [학생 전용 모드]</strong>로 고정됩니다. 상단 <strong>[🔒 관리자]</strong> 버튼을 눌러 이 비밀번호를 입력한 선생님만 문제·설정을 바꿀 수 있습니다.
+              비밀번호 입력 후 <strong>[🔑 비번 즉시 저장]</strong> 또는 하단 <strong>[설정 저장]</strong>을 누르면 즉시 반영되며, 프리셋(쉬움/기본/고수)을 눌러도 비밀번호는 초기화되지 않고 안전하게 유지됩니다.
             </p>
           </div>
 
@@ -1418,9 +1423,10 @@ function doGet(e) {
       if (!Array.isArray(questions) || questions.length === 0) {
         questions = JSON.parse(JSON.stringify(initialQuestions));
       }
+      const savedLocalSettings = loadLocal(STORAGE_KEYS.SETTINGS, {});
       let settings = hasEmbeddedBundle
-        ? Object.assign({}, initialSettings)
-        : Object.assign({}, initialSettings, loadLocal(STORAGE_KEYS.SETTINGS, {}));
+        ? Object.assign({}, initialSettings, savedLocalSettings && savedLocalSettings._adminUpdatedLocally ? savedLocalSettings : {})
+        : Object.assign({}, initialSettings, savedLocalSettings);
       if (!settings.adminPassword) settings.adminPassword = '1234';
       let records = loadLocal(STORAGE_KEYS.RECORDS, DEFAULT_RECORDS);
       let sheetWebhookUrl = hasEmbeddedBundle
@@ -1824,7 +1830,9 @@ function doGet(e) {
             group: gateGroup,
             curtain: energyCurtain,
             topBar,
-            pos: new THREE.Vector3(0, curY + 2.2, curZ),
+            plat: cpPlat,
+            topY: curY + 0.6,
+            pos: new THREE.Vector3(0, curY + 0.6, curZ),
             unlocked: false
           });
         }
@@ -2479,6 +2487,31 @@ function doGet(e) {
         renderer.setSize(w, h);
       }
 
+      function getSafeRespawnPoint(stageIdx) {
+        if (stageIdx > 0) {
+          const cp = checkpoints.find(c => c.stageIndex === stageIdx);
+          if (cp) {
+            const topY = typeof cp.topY === 'number' ? cp.topY : (cp.plat ? cp.plat.baseY + cp.plat.h * 0.5 : cp.pos.y);
+            const cx = cp.plat ? cp.plat.baseX : cp.pos.x;
+            const cz = cp.plat ? cp.plat.baseZ : cp.pos.z;
+            return new THREE.Vector3(cx, topY, cz);
+          }
+        }
+        const spawnPlat = platforms.find(p => p.isSpawn) || platforms[0];
+        if (spawnPlat) {
+          return new THREE.Vector3(spawnPlat.baseX, spawnPlat.baseY + spawnPlat.h * 0.5, spawnPlat.baseZ);
+        }
+        return new THREE.Vector3(0, 0.6, 0);
+      }
+
+      function clearAllMovementInputs() {
+        keys.up = false;
+        keys.down = false;
+        keys.left = false;
+        keys.right = false;
+        keys.sprint = false;
+      }
+
       function resetPlayerToSpawn(fullReset = false) {
         if (fullReset) {
           player.currentStage = 0;
@@ -2489,16 +2522,28 @@ function doGet(e) {
           player.elapsedSec = 0;
           player.isFinished = false;
           player.lives = Number(settings.livesLimit) || 0;
-          player.spawnPos.set(0, 3, 0);
           checkpoints.forEach(c => {
             c.unlocked = false;
             if (c.curtain) c.curtain.material.color.setHex(0xfef08a);
+            if (c.topBar) c.topBar.material.color.setHex(0xfbbf24);
           });
         }
-        player.pos.copy(player.spawnPos);
+
+        // Always compute exact safe platform top coordinates for the current unlocked stage
+        const safePt = getSafeRespawnPoint(fullReset ? 0 : (player.unlockedStage || 0));
+        player.spawnPos.copy(safePt);
+        player.pos.copy(safePt);
         player.vel.set(0, 0, 0);
-        player.onGround = false;
+        player.onGround = true;
         player.jumpsUsed = 0;
+        player.respawnGraceUntil = performance.now() + 750;
+        player.quizCooldownUntil = performance.now() + 900;
+        clearAllMovementInputs();
+
+        if (playerMesh) {
+          playerMesh.position.copy(player.pos);
+          playerMesh.rotation.y = player.facingAngle;
+        }
         updateHudUI();
       }
 
@@ -2538,12 +2583,14 @@ function doGet(e) {
           }
         });
 
+        const isInRespawnGrace = performance.now() < (player.respawnGraceUntil || 0);
+
         // 2. Update Spinning Laser Hazards
         hazards.forEach(h => {
           if (h.type === 'spinner') {
             h.mesh.rotation.y += h.speed * hazSpeedMult * dt;
-            // Check collision with player if playing
-            if (player.isPlaying && !player.isQuizOpen) {
+            // Check collision with player if playing and not in respawn grace period
+            if (player.isPlaying && !player.isQuizOpen && !isInRespawnGrace) {
               const dx = player.pos.x - h.mesh.position.x;
               const dz = player.pos.z - h.mesh.position.z;
               const dy = (player.pos.y + 1.0) - h.centerY;
@@ -2613,21 +2660,27 @@ function doGet(e) {
 
           player.onGround = false;
 
-          // Platform Collisions
+          // Platform Collisions (Swept vertical segment check to prevent high-speed fall tunneling)
+          const fallStepMargin = Math.max(1.35, Math.abs(player.vel.y) * dt + 0.75);
           for (let i = 0; i < platforms.length; i++) {
             const p = platforms[i];
             const px = p.mesh.position.x;
             const py = p.mesh.position.y;
             const pz = p.mesh.position.z;
-            const halfW = p.w * 0.5 + 0.38;
-            const halfD = p.d * 0.5 + 0.38;
+            const halfW = p.w * 0.5 + 0.45;
+            const halfD = p.d * 0.5 + 0.45;
             const topY = py + p.h * 0.5;
 
             if (
               Math.abs(player.pos.x - px) <= halfW &&
               Math.abs(player.pos.z - pz) <= halfD
             ) {
-              if (player.vel.y <= 0 && prevY >= topY - 0.35 && player.pos.y <= topY + 0.15) {
+              if (
+                player.vel.y <= 0 &&
+                prevY >= topY - 0.65 &&
+                player.pos.y <= topY + 0.25 &&
+                player.pos.y >= topY - fallStepMargin
+              ) {
                 player.pos.y = topY;
                 player.vel.y = 0;
                 player.onGround = true;
@@ -2644,7 +2697,7 @@ function doGet(e) {
                   player.onGround = false;
                   playSound('bounce');
                 } else if (p.type === 'checkpoint') {
-                  handleTouchCheckpoint(p.stageIndex, px, topY + 1.2, pz);
+                  handleTouchCheckpoint(p.stageIndex, px, topY, pz);
                 } else if (p.type === 'goal') {
                   handleTouchGoal();
                 }
@@ -2654,8 +2707,8 @@ function doGet(e) {
           }
 
           // Fall below abyss check
-          if (player.pos.y < -16) {
-            handlePlayerFallOrHit('💧 아래로 떨어졌습니다! 마지막 체크포인트에서 부활합니다.');
+          if (player.pos.y < -15) {
+            handlePlayerFallOrHit('💧 아래로 떨어졌습니다! 마지막 체크포인트에서 안전하게 부활합니다.');
           }
 
           // Sync player mesh & limb swing animation
@@ -2766,6 +2819,7 @@ function doGet(e) {
       // 6. CHECKPOINT QUIZ & GAMEPLAY HANDLERS
       // ==========================================
       function handlePlayerFallOrHit(reasonMsg) {
+        if (performance.now() < (player.respawnGraceUntil || 0)) return;
         playSound('fall');
         if (Number(settings.livesLimit) > 0) {
           player.lives -= 1;
@@ -2784,13 +2838,18 @@ function doGet(e) {
         const cp = checkpoints.find(c => c.stageIndex === stageIdx);
         if (!cp) return;
 
+        const safeTopY = typeof cp.topY === 'number' ? cp.topY : spawnY;
+
         if (!cp.unlocked) {
-          // Open Checkpoint Quiz Modal!
-          player.pendingQuizStage = { stageIdx, spawnX, spawnY, spawnZ, cp };
+          if (performance.now() < (player.quizCooldownUntil || 0)) return;
+          // Stop player velocity and clear sticky keys before opening Checkpoint Quiz Modal
+          player.vel.set(0, 0, 0);
+          clearAllMovementInputs();
+          player.pendingQuizStage = { stageIdx, spawnX, spawnY: safeTopY, spawnZ, cp };
           openCheckpointQuizModal(stageIdx);
         } else {
-          // Already unlocked checkpoint: update spawn position silently
-          player.spawnPos.set(spawnX, spawnY, spawnZ);
+          // Already unlocked checkpoint: update spawn position to exact platform top surface
+          player.spawnPos.set(spawnX, safeTopY, spawnZ);
         }
       }
 
@@ -3450,7 +3509,16 @@ function doGet(e) {
         document.getElementById('btn-close-quiz-later').addEventListener('click', () => {
           document.getElementById('quiz-modal').classList.add('hidden');
           player.isQuizOpen = false;
-          player.pos.z += 2.2;
+          player.quizCooldownUntil = performance.now() + 2600;
+          player.vel.set(0, 0, 0);
+          clearAllMovementInputs();
+          if (player.pendingQuizStage && player.pendingQuizStage.cp) {
+            const cp = player.pendingQuizStage.cp;
+            const topY = typeof cp.topY === 'number' ? cp.topY : player.pos.y;
+            player.pos.set(cp.pos.x, topY, cp.pos.z + 1.5);
+            player.onGround = true;
+          }
+          showToast('⏸️ 잠시 숨고르기! 2.5초 후 관문에 다시 서면 퀴즈가 열립니다. ([Q]키로 즉시 열기 가능)', 'info');
         });
 
         // Goal Modal Buttons
@@ -3488,6 +3556,11 @@ function doGet(e) {
           if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = false;
           if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = false;
           if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') keys.sprint = false;
+        });
+
+        window.addEventListener('blur', clearAllMovementInputs);
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) clearAllMovementInputs();
         });
 
         // Mouse & Touch Orbit Camera on Canvas
@@ -3718,13 +3791,13 @@ function doGet(e) {
           showToast(sheetWebhookUrl ? '구글 시트 웹앱 URL이 저장되었습니다!' : '로컬 저장 모드로 전환되었습니다.', 'success');
         });
 
-        document.getElementById('btn-sync-from-sheet').addEventListener('click', async () => {
+        async function syncRecordsFromGoogleSheet() {
           if (!sheetWebhookUrl) {
             showToast('먼저 구글 Apps Script 웹앱 URL을 입력하고 저장해주세요!', 'warn');
             return;
           }
           try {
-            showToast('구글 시트에서 데이터를 불러오는 중...', 'info');
+            showToast('구글 시트에서 최신 순위 데이터를 불러오는 중...', 'info');
             const res = await fetch(sheetWebhookUrl);
             const data = await res.json();
             if (data && Array.isArray(data.records)) {
@@ -3736,7 +3809,9 @@ function doGet(e) {
           } catch (e) {
             showToast('시트 조회 실패: URL 또는 배포 권한(모든 사용자)을 확인해주세요.', 'warn');
           }
-        });
+        }
+
+        document.getElementById('btn-sync-from-sheet').addEventListener('click', syncRecordsFromGoogleSheet);
 
         document.getElementById('btn-push-all-to-sheet').addEventListener('click', async () => {
           if (!sheetWebhookUrl) {
@@ -3892,7 +3967,7 @@ function doGet(e) {
         const btnOpenGhAdmin = document.getElementById('btn-open-gh-deploy-modal-admin');
         if (btnOpenGhAdmin) {
           btnOpenGhAdmin.addEventListener('click', () => {
-            document.getElementById('btn-apply-admin-settings').click();
+            saveAdminSettingsFromForm();
             openGhDeployModal();
           });
         }
@@ -3914,21 +3989,7 @@ function doGet(e) {
         const btnExportAdmin = document.getElementById('btn-export-deploy-html-admin');
         if (btnExportAdmin) {
           btnExportAdmin.addEventListener('click', () => {
-            // Save admin settings first, then export
-            settings.mapTitle = document.getElementById('cfg-map-title').value.trim() || '김해외동 점프맵';
-            settings.mapNotice = document.getElementById('cfg-map-notice').value.trim();
-            settings.stageCount = Number(document.getElementById('cfg-stage-count').value) || 6;
-            settings.mapTheme = document.getElementById('cfg-map-theme').value;
-            settings.quizOrder = document.getElementById('cfg-quiz-order').value;
-            settings.wrongPenalty = document.getElementById('cfg-wrong-penalty').value;
-            settings.livesLimit = Number(document.getElementById('cfg-lives-limit').value) || 0;
-            settings.doubleJump = document.getElementById('cfg-double-jump').value === 'true';
-            settings.moveSpeed = Number(document.getElementById('cfg-move-speed').value) || 12;
-            settings.jumpPower = Number(document.getElementById('cfg-jump-power').value) || 14;
-            settings.gravity = Number(document.getElementById('cfg-gravity').value) || 30;
-            settings.hazardSpeed = Number(document.getElementById('cfg-hazard-speed').value) || 1.0;
-            settings.platformScale = Number(document.getElementById('cfg-platform-scale').value) || 1.0;
-            saveLocal(STORAGE_KEYS.SETTINGS, settings);
+            saveAdminSettingsFromForm();
             exportStandaloneDeployHtml();
           });
         }
@@ -3956,9 +4017,17 @@ function doGet(e) {
         });
 
         // Admin Settings Sync & Sliders
+        function updatePwStatusBadge() {
+          const badge = document.getElementById('lbl-current-pw-status');
+          if (badge) {
+            badge.textContent = `현재 적용 비번: ${settings.adminPassword || '1234'}`;
+          }
+        }
+
         function syncSettingsToForm() {
           const pwEl = document.getElementById('cfg-admin-password');
           if (pwEl) pwEl.value = settings.adminPassword || '1234';
+          updatePwStatusBadge();
           document.getElementById('cfg-map-title').value = settings.mapTitle;
           document.getElementById('cfg-map-notice').value = settings.mapNotice;
           document.getElementById('cfg-stage-count').value = settings.stageCount;
@@ -3981,6 +4050,38 @@ function doGet(e) {
         }
         syncSettingsToForm();
 
+        // Immediate Password Save Button & Auto-Sync on change
+        const cfgPwInput = document.getElementById('cfg-admin-password');
+        const btnQuickSavePw = document.getElementById('btn-quick-save-pw');
+        function commitAdminPasswordChange(showNotification = true) {
+          if (!cfgPwInput) return;
+          const newPw = cfgPwInput.value.trim();
+          if (!newPw) {
+            if (showNotification) showToast('⚠️ 비밀번호는 비워둘 수 없습니다. 최소 1글자 이상 입력해주세요.', 'warn');
+            cfgPwInput.value = settings.adminPassword || '1234';
+            return;
+          }
+          settings.adminPassword = newPw;
+          settings._adminUpdatedLocally = true;
+          saveLocal(STORAGE_KEYS.SETTINGS, settings);
+          updatePwStatusBadge();
+          if (showNotification) {
+            showToast(`🔑 관리자 비밀번호가 [${newPw}](으)로 즉시 변경·저장되었습니다! (학생 배포본 반영 시 GitHub 자동배포를 눌러주세요)`, 'success');
+          }
+        }
+        if (btnQuickSavePw) {
+          btnQuickSavePw.addEventListener('click', () => commitAdminPasswordChange(true));
+        }
+        if (cfgPwInput) {
+          cfgPwInput.addEventListener('change', () => commitAdminPasswordChange(false));
+          cfgPwInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitAdminPasswordChange(true);
+            }
+          });
+        }
+
         document.getElementById('cfg-stage-count').addEventListener('input', e => {
           document.getElementById('lbl-stage-count').textContent = `${e.target.value}개`;
         });
@@ -4002,6 +4103,9 @@ function doGet(e) {
 
         document.querySelectorAll('.preset-btn').forEach(btn => {
           btn.addEventListener('click', () => {
+            const preservedPw = (document.getElementById('cfg-admin-password')?.value.trim()) || settings.adminPassword || '1234';
+            const preservedTitle = (document.getElementById('cfg-map-title')?.value.trim()) || settings.mapTitle || '김해외동 점프맵';
+            const preservedNotice = (document.getElementById('cfg-map-notice')?.value.trim()) || settings.mapNotice;
             const preset = btn.getAttribute('data-preset');
             if (preset === 'easy') {
               Object.assign(settings, {
@@ -4015,7 +4119,7 @@ function doGet(e) {
                 livesLimit: 0,
                 wrongPenalty: 'none'
               });
-              showToast('🌱 초등 저학년용 쉬움 프리셋이 입력되었습니다!', 'info');
+              showToast('🌱 초등 저학년용 쉬움 프리셋이 입력되었습니다! (관리자 비번 유지)', 'info');
             } else if (preset === 'hard') {
               Object.assign(settings, {
                 stageCount: 9,
@@ -4023,16 +4127,21 @@ function doGet(e) {
                 jumpPower: 14,
                 gravity: 34,
                 hazardSpeed: 1.6,
-                platformScale: 0.8,
-                doubleJump: false,
-                livesLimit: 5,
+                platformScale: 0.85,
+                doubleJump: true,
+                livesLimit: 3,
                 wrongPenalty: 'knockback'
               });
-              showToast('🔥 점프 고수용 하드코어 프리셋이 입력되었습니다!', 'warn');
+              showToast('🔥 고학년 챌린지 고수 프리셋이 입력되었습니다! (관리자 비번 유지)', 'info');
             } else {
-              Object.assign(settings, DEFAULT_SETTINGS);
-              showToast('⚖️ 기본 표준 프리셋으로 복원되었습니다.', 'info');
+              Object.assign(settings, DEFAULT_SETTINGS, {
+                adminPassword: preservedPw,
+                mapTitle: preservedTitle,
+                mapNotice: preservedNotice
+              });
+              showToast('⚖️ 기본 물리 프리셋으로 복원되었습니다! (관리자 비번 유지)', 'info');
             }
+            settings.adminPassword = preservedPw;
             syncSettingsToForm();
           });
         });
@@ -4055,8 +4164,10 @@ function doGet(e) {
           settings.gravity = Number(document.getElementById('cfg-gravity').value) || 30;
           settings.hazardSpeed = Number(document.getElementById('cfg-hazard-speed').value) || 1.0;
           settings.platformScale = Number(document.getElementById('cfg-platform-scale').value) || 1.0;
+          settings._adminUpdatedLocally = true;
 
           saveLocal(STORAGE_KEYS.SETTINGS, settings);
+          updatePwStatusBadge();
           buildObbyCourse();
           resetPlayerToSpawn(true);
           updateHudUI();
